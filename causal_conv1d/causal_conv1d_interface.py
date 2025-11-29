@@ -19,8 +19,8 @@ class CausalConv1dFn(torch.autograd.Function):
         final_states_out=None,
         activation=None,
     ):
-        if activation not in [None, "silu", "swish"]:
-            raise NotImplementedError("activation must be None, silu, or swish")
+        if activation not in [None, "silu", "swish", "relu"]:
+            raise NotImplementedError("activation must be None, silu, or swish or relu")
         if x.stride(2) != 1 and x.stride(1) != 1:
             x = x.contiguous()
         bias = bias.contiguous() if bias is not None else None
@@ -52,7 +52,8 @@ class CausalConv1dFn(torch.autograd.Function):
                 ).transpose(1, 2)
         else:
             final_states_out = None
-        ctx.activation = activation in ["silu", "swish"]
+        # ctx.activation = activation in ["silu", "swish"]
+        ctx.activation = activation
         out = causal_conv1d_fwd_function(
             x, weight, bias, seq_idx, initial_states, final_states_out, ctx.activation
         )
@@ -188,9 +189,9 @@ def causal_conv1d_update(x, conv_state, weight, bias=None, activation=None, cach
 
     out: (batch, dim) or (batch, dim, seqlen)
     """
-    if activation not in [None, "silu", "swish"]:
-        raise NotImplementedError("activation must be None, silu, or swish")
-    activation = activation in ["silu", "swish"]
+    if activation not in [None, "silu", "swish", "relu"]:
+        raise NotImplementedError("activation must be None, silu, or swish or relu")
+    # activation = activation in ["silu", "swish"]
     unsqueeze = x.dim() == 2
     if unsqueeze:
         x = x.unsqueeze(-1)

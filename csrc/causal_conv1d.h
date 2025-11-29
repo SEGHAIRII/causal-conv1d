@@ -5,12 +5,19 @@
 #pragma once
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+enum class Activation {
+    None,
+    Silu,
+    Swish,
+    Relu
+};
+
 
 struct ConvParamsBase {
     using index_t = uint32_t;
 
     int batch, dim, seqlen, width;
-    bool silu_activation;
+    Activation activation;
 
     index_t x_batch_stride;
     index_t x_c_stride;

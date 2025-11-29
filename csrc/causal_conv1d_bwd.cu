@@ -19,6 +19,9 @@
 #include "causal_conv1d_common.h"
 #include "static_switch.h"
 
+
+
+
 template<int kNThreads_, int kWidth_, bool kSiluAct_, bool kIsVecLoad_, typename input_t_, typename weight_t_>
 struct Causal_conv1d_bwd_kernel_traits {
     using input_t = input_t_;
@@ -124,19 +127,35 @@ void causal_conv1d_bwd_kernel(ConvParamsBwd params) {
         }
         float dout_vals[2 * kNElts], x_vals[2 * kNElts];
         if constexpr (!kSiluAct) {
+            // Simple path - identity or ReLU activation
             __syncthreads();
-            // Thread 0 don't write yet, so that thread kNThreads - 1 can read
-            // the first elements of the next chunk.
             if (tidx > 0) { smem_exchange[tidx] = reinterpret_cast<vec_t *>(dout_vals_load)[0]; }
             __syncthreads();
             reinterpret_cast<vec_t *>(dout_vals_load)[1] = smem_exchange[tidx < kNThreads - 1 ? tidx + 1 : 0];
             __syncthreads();
-            // Now thread 0 can write the first elements of the current chunk.
             if (tidx == 0) { smem_exchange[tidx] = reinterpret_cast<vec_t *>(dout_vals_load)[0]; }
+            
             #pragma unroll
             for (int i = 0; i < 2 * kNElts; ++i) {
                 dout_vals[i] = float(dout_vals_load[i]);
                 x_vals[i] = float(x_vals_load[i]);
+            }
+            
+            // Apply ReLU gradient if needed (runtime check with minimal overhead)
+            if (params.activation == Activation::Relu) {
+                #pragma unroll
+                for (int i = 0; i < kNElts; ++i) {
+                    // Compute output value
+                    float out_val = bias_val;
+                    #pragma unroll
+                    for (int w = 0; w < kWidth; ++w) {
+                        out_val += weight_vals[w] * x_vals[kNElts + i - (kWidth - w - 1)];
+                    }
+                    // Apply ReLU gradient: zero out gradient if output was negative
+                    if (out_val <= 0.0f) {
+                        dout_vals[i] = 0.0f;
+                    }
+                }
             }
         } else {
             if (tidx == 0 && chunk > 0) {
@@ -244,11 +263,16 @@ void causal_conv1d_bwd_kernel(ConvParamsBwd params) {
     }
 }
 
+
+
+// Re confirm
 template<int kNThreads, int kWidth, typename input_t, typename weight_t>
 void causal_conv1d_bwd_launch(ConvParamsBwd &params, cudaStream_t stream) {
     static constexpr int kNElts = sizeof(input_t) == 4 ? 4 : 8;
+    Activation activation = params.activation;
+    bool silu_activation = (activation == Activation::Silu);
     BOOL_SWITCH(params.seqlen % kNElts == 0, kIsVecLoad, [&] {
-        BOOL_SWITCH(params.silu_activation, kSiluAct, [&] {
+        BOOL_SWITCH(silu_activation, kSiluAct, [&] {
             using Ktraits = Causal_conv1d_bwd_kernel_traits<kNThreads, kWidth, kSiluAct, kIsVecLoad, input_t, weight_t>;
             constexpr int kSmemSize = Ktraits::kSmemSize;
             dim3 grid(params.batch, params.dim);
@@ -567,7 +591,9 @@ void causal_conv1d_channellast_bwd_kernel(ConvParamsBwd params) {
 
 template<int kNThreads, int kWidth, typename input_t, typename weight_t>
 void causal_conv1d_channellast_bwd_launch(ConvParamsBwd &params, cudaStream_t stream) {
-    BOOL_SWITCH(params.silu_activation, kSiluAct, [&] {
+    Activation activation = params.activation;
+    bool silu_activation = (activation == Activation::Silu);
+    BOOL_SWITCH(silu_activation, kSiluAct, [&] {
         BOOL_SWITCH(params.seq_idx_ptr != nullptr, kHasSeqIdx, [&] {
             BOOL_SWITCH(params.dfinal_states_ptr != nullptr, kHasDfinalStates, [&] {
                 BOOL_SWITCH(params.seqlen <= 128, kChunkSizeL64, [&] {

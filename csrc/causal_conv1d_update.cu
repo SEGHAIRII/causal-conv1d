@@ -105,7 +105,9 @@ void causal_conv1d_update_kernel(ConvParamsBase params) {
         float out_val = bias_val;
         #pragma unroll
         for (int j = 0; j < kWidth; ++j) { out_val += weight_vals[j] * x_vals[j]; }
-        if (params.silu_activation) { out_val = out_val / (1 + expf(-out_val)); }
+        Activation activation = params.activation;
+        if (activation == Activation::Silu || activation == Activation::Swish) { out_val = out_val / (1 + expf(-out_val)); }
+        else if (activation == Activation::Relu) { out_val = out_val < 0.f ? 0.f : out_val; }
         out[i * params.out_l_stride] = input_t(out_val);
         // Shift the input buffer by 1
         #pragma unroll

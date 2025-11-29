@@ -41,6 +41,11 @@ struct Causal_conv1d_fwd_kernel_traits {
     static constexpr int kSmemSize = kSmemIOSize + kSmemExchangeSize;
 };
 
+
+
+
+
+
 template<typename Ktraits>
 __global__ __launch_bounds__(Ktraits::kNThreads)
 void causal_conv1d_fwd_kernel(ConvParamsBase params) {
@@ -52,6 +57,8 @@ void causal_conv1d_fwd_kernel(ConvParamsBase params) {
     using vec_t = typename Ktraits::vec_t;
     using weight_t = typename Ktraits::weight_t;
 
+
+    Activation activation = params.activation;
     // Shared memory.
     extern __shared__ char smem_[];
     auto& smem_load = reinterpret_cast<typename Ktraits::BlockLoadT::TempStorage&>(smem_);
@@ -115,10 +122,16 @@ void causal_conv1d_fwd_kernel(ConvParamsBase params) {
             }
         }
 
-        if (params.silu_activation) {
+        if (activation == Activation::Silu || activation == Activation::Swish) {
             #pragma unroll
             for (int i = 0; i < kNElts; ++i) {
                 out_vals[i] = out_vals[i] / (1 + expf(-out_vals[i]));
+            }
+        }
+        else if  (activation == Activation::Relu) {
+            #pragma unroll
+            for (int i = 0; i < kNElts; ++i) {
+                out_vals[i] = out_vals[i] < 0.f ? 0.f : out_vals[i];
             }
         }
 
@@ -330,7 +343,10 @@ void causal_conv1d_channellast_fwd_kernel(ConvParamsBase params) {
                 out_vals[i] += seq_idx_thread[i + w] == seq_idx_cur ? weight_vals[w] * x_vals[i + w] : 0.f;
             }
         }
-        if (params.silu_activation) {out_vals[i] = out_vals[i] / (1 + expf(-out_vals[i])); }
+        Activation activation = params.activation;
+        if (activation == Activation::Silu) {
+            out_vals[i] = out_vals[i] / (1 + expf(-out_vals[i]));
+        }
     }
 
     __syncthreads();

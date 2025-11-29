@@ -15,6 +15,9 @@
 
 #include "causal_conv1d.h"
 
+
+
+
 #define CHECK_SHAPE(x, ...) TORCH_CHECK(x.sizes() == torch::IntArrayRef({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
 
 #define DISPATCH_ITYPE_FLOAT_AND_HALF_AND_BF16(ITYPE, NAME, ...)                    \
@@ -45,6 +48,21 @@
         AT_ERROR(#NAME, " not implemented for weight type '", toString(WTYPE), "'"); \
     }
 
+
+
+// function to get the right activation used
+Activation string_to_activation(const std::string& activation_str) {
+    if (activation_str == "silu" || activation_str == "swish") {
+        return Activation::Silu;
+    } else if (activation_str == "relu") {
+        return Activation::Relu;
+    } else if (activation_str == "identity" || activation_str == "" || activation_str == "none") {
+        return Activation::None;
+    } else {
+        TORCH_CHECK(false, "Unsupported activation: ", activation_str);
+    }
+}
+
 template<typename input_t, typename weight_t>
 void causal_conv1d_fwd_cuda(ConvParamsBase &params, cudaStream_t stream);
 template <typename input_t, typename weight_t>
@@ -69,7 +87,7 @@ void set_conv_params_fwd(ConvParamsBase &params,
                          const at::Tensor weight,
                          const at::Tensor out,
                          void* bias_ptr,
-                         bool silu_activation) {
+                         const std::string& activation) {
 
     // Reset the parameters
     memset(&params, 0, sizeof(params));
@@ -79,7 +97,9 @@ void set_conv_params_fwd(ConvParamsBase &params,
     params.seqlen = seqlen;
     params.width = width;
 
-    params.silu_activation = silu_activation;
+    // Set the activation
+    Activation param_activation = string_to_activation(activation);
+    params.activation = param_activation;
 
     // Set the pointers and strides.
     params.x_ptr = x.data_ptr();
@@ -112,10 +132,10 @@ void set_conv_params_bwd(ConvParamsBwd &params,
                          const at::Tensor dx,
                          const at::Tensor dweight,
                          void* dbias_ptr,
-                         bool silu_activation) {
+                         const std::string& activation) {
     // Pass in "dout" instead of "out", we're not gonna use "out" at all.
     set_conv_params_fwd(params, batch, dim, seqlen, width,
-                        x, weight, dout, bias_ptr, silu_activation);
+                        x, weight, dout, bias_ptr, activation);
 
     // Set the pointers and strides.
     params.dout_ptr = dout.data_ptr();
@@ -141,7 +161,7 @@ causal_conv1d_fwd(const at::Tensor &x,
                   const c10::optional<at::Tensor> &initial_states_,
                   at::Tensor &out,
                   c10::optional<at::Tensor> &final_states_out_,
-                  bool silu_activation) {
+                  const std::string& activation) {
     auto input_type = x.scalar_type();
     auto weight_type = weight.scalar_type();
     TORCH_CHECK(input_type == at::ScalarType::Float || input_type == at::ScalarType::Half || input_type == at::ScalarType::BFloat16);
@@ -188,7 +208,7 @@ causal_conv1d_fwd(const at::Tensor &x,
     ConvParamsBase params;
     set_conv_params_fwd(params, batch_size, dim, seqlen, width, x, weight, out,
                         bias_.has_value() ? bias_.value().data_ptr() : nullptr,
-                        silu_activation);
+                        activation);
 
     if (seq_idx_.has_value()) {
         params.seq_idx_ptr = seq_idx_.value().data_ptr();
@@ -256,7 +276,7 @@ causal_conv1d_bwd(const at::Tensor &x,
                   at::Tensor &dweight,
                   c10::optional<at::Tensor> &dbias_,
                   c10::optional<at::Tensor> &dinitial_states_,
-                  bool silu_activation) {
+                  const std::string& activation) {
     auto input_type = x.scalar_type();
     auto weight_type = weight.scalar_type();
     TORCH_CHECK(input_type == at::ScalarType::Float || input_type == at::ScalarType::Half || input_type == at::ScalarType::BFloat16);
@@ -324,7 +344,7 @@ causal_conv1d_bwd(const at::Tensor &x,
     set_conv_params_bwd(params, batch_size, dim, seqlen, width,
                         x, weight, bias_.has_value() ? bias_.value().data_ptr() : nullptr,
                         dout, dx, dweight, bias_.has_value() ? dbias_.value().data_ptr() : nullptr,
-                        silu_activation);
+                        activation);
 
     if (seq_idx_.has_value()) {
         params.seq_idx_ptr = seq_idx_.value().data_ptr();
@@ -390,7 +410,7 @@ causal_conv1d_update(const at::Tensor &x,
                      const at::Tensor &weight,
                      const c10::optional<at::Tensor> &bias_,
                      at::Tensor &out,
-                     bool silu_activation,
+                     const std::string& activation,
                      const c10::optional<at::Tensor> &cache_seqlens_,
                      const c10::optional<at::Tensor> &conv_state_indices_
                      ) {
@@ -428,7 +448,7 @@ causal_conv1d_update(const at::Tensor &x,
     ConvParamsBase params;
     set_conv_params_fwd(params, batch_size, dim, seqlen, width, x, weight, out,
                         bias_.has_value() ? bias_.value().data_ptr() : nullptr,
-                        silu_activation);
+                        activation);
     params.conv_state_ptr = conv_state.data_ptr();
     params.conv_state_len = conv_state_len;
     // All stride are in elements, not bytes.
